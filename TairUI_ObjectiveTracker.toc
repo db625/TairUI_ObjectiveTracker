@@ -1,0 +1,11 @@
+## Interface: 110107
+## Title: TairUI_ObjectiveTracker
+## Author: Tair
+## Version: 0.1
+## Notes: An objective tracker designed for immersion and simplicity.
+
+main.lua
+objectives.lua
+tracker.lua
+
+## OptionalDeps: TairUI

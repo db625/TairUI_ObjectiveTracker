@@ -1,0 +1,20 @@
+# Backup & temporary files
+*.bak
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+
+# WoW cache folders
+*.swp
+*.swo
+
+# Ignore saved variables
+*.wtf
+
+# Editor folders
+.vscode/
+.idea/
+
+# Zip
+*.zip
