@@ -28,6 +28,10 @@ A minimalist World of Warcraft objective tracker focused on immersion and casual
   - Dungeon affixes
 - For full functionality, you can type `/tt` to switch back to Blizzard’s tracker as needed.
 
-## License
+## To Do
 
-This project is licensed under the MIT License. See `LICENSE` for details.
+- Affix icon display
+- Usable quest item icon display
+- Dungeon/scenario timer
+- Mouse input
+- Config UI

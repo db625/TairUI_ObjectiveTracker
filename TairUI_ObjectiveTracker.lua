@@ -71,7 +71,7 @@ function TairUI_ObjectiveFrame:new(index)
 
     self.frame = CreateFrame("Frame", nil, TairUI.Tracker.frame)
 
-    -- Mouse handling to redo without taint...
+    -- Future click handling
     -- self.frame:EnableMouse(true)
     -- self.frame:SetScript("OnMouseUp", function(_, button)
     --     if InCombatLockdown() then
@@ -237,7 +237,7 @@ function TairUI_Tracker:RegisterEvents()
         "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "SUPER_TRACKING_CHANGED",
         "ACTIVE_DELVE_DATA_UPDATE", "WALK_IN_DATA_UPDATE",
         "SCENARIO_UPDATE", "SCENARIO_CRITERIA_UPDATE", "SCENARIO_POI_UPDATE",
-        "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED", -- ⬅️ Just add them here
+        "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED",
     }
 
     for _, e in ipairs(events) do
@@ -477,8 +477,8 @@ end
 
 -- Scenario (delve) update routine
 function TairUI_Tracker:UpdateDelve()
-    if showSuperTracked then self:AppendSuperTrackedQuest() end
     self:AppendScenarioObjectives()
+    if showSuperTracked then self:AppendSuperTrackedQuest() end
 end
 
 -- Event update routine; seems like scenarios cover everything we need.
@@ -488,7 +488,8 @@ end
 
 -- Function to display a quest on the tracker. We use an existing objective frame or create a new one if needed.
 function TairUI_Tracker:ShowQuest(questID)
-    if self.shownQuests[questID] then return end -- avoid duplicates
+    -- Filter duplicates
+    if self.shownQuests[questID] then return end
     self.shownQuests[questID] = true
 
     local frame = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
