@@ -27,3 +27,10 @@ A minimalist World of Warcraft objective tracker focused on immersion and casual
   - Mythic+ timers
   - Dungeon affixes
 - For full functionality, you can type `/tt` to switch back to Blizzard’s tracker as needed.
+
+## To Do
+
+- Affix icons
+- Usable quest item icon
+- Dungeon/scenario timer
+- Config UI
