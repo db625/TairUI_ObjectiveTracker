@@ -4,8 +4,6 @@
 ## Version: 0.1
 ## Notes: An objective tracker designed for immersion and simplicity.
 
-main.lua
-objectives.lua
-tracker.lua
+TairUI_ObjectiveTracker.lua
 
 ## OptionalDeps: TairUI

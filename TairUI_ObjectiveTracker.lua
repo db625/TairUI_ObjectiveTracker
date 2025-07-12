@@ -1,17 +1,204 @@
--- tracker.lua
-local TairUI = _G.TairUI
-local config = TairUI.Config
+-- TairUI Objective Tracker
+-- A minimalist quest tracking frame designed to emphasize immersion and reduce clutter.
+
+-- Fetch the TairUI addon namespace if it exists.
+local addonName = ...
+local TairUI = _G.TairUI or {}
+
+-- Load configuration from the global TairUI table if present, or fallback to Blizzard UI-friendly defaults.
+
+local _, defaultSize = GameFontNormal:GetFont()
+defaultSize = defaultSize or 12 
+
+local baseConfig = TairUI.Config or {
+    Layout = { edgeMargin = 20 },
+    General = {
+        HUDTextGapLarge = 16,
+        HUDTextGap = 8,
+        HUDTextAlpha = 1,
+        HUDTitleSize = defaultSize + 3 or 15,
+        HUDTextSize = defaultSize or 12,
+        HUDTextShadowAlpha = 1,
+        HUDTextFlags = "",
+    },
+    Colors = {
+        ui = {
+            gold = { r = 1, g = 0.82, b = 0 },
+            light_gray = { r = 0.75, g = 0.75, b = 0.75 },
+            white = { r = 1, g = 1, b = 1 },
+        }
+    }
+}
+
+-- Derive working config for the tracker's layout and appearance
+local config = {
+    marginX = 0,
+    marginY = baseConfig.Layout.edgeMargin * -1,
+    questSpacing = baseConfig.General.HUDTextGapLarge,
+    lineSpacing = baseConfig.General.HUDTextGap,
+    maxQuests = 6,
+    shadowAlpha = baseConfig.General.HUDTextShadowAlpha,
+    frameAlpha = baseConfig.General.HUDTextAlpha,
+    titleFontSize = baseConfig.General.HUDTitleSize,
+    objectiveFontSize = baseConfig.General.HUDTextSize,
+    fontFace = "Fonts\\FRIZQT__.TTF",
+    fontFlag = baseConfig.General.HUDTextFlag,
+    titleColor = baseConfig.Colors.ui.gold,
+    completeColor = baseConfig.Colors.ui.white,
+    incompleteColor = baseConfig.Colors.ui.light_gray,
+}
+
+-- Working feature flags
+local showSuperTracked = true
+local showProximity = true
+local useTairTracker = true
 
 ----------------------------------------
--- TairUI_Tracker Class
+-- Objective Frame Class
+----------------------------------------
+
+local TairUI_ObjectiveFrame = {}
+TairUI_ObjectiveFrame.__index = TairUI_ObjectiveFrame
+
+-- Create an objective frame that draws an objective title and series of objectives
+function TairUI_ObjectiveFrame:new(index)
+    local self = setmetatable({}, TairUI_ObjectiveFrame)
+    self.index = index
+    self.questId = 0
+    self.objectiveFontStrings = {}
+    self.cachedObjectives = {}
+    self.cachedTitle = ""
+
+    self.frame = CreateFrame("Frame", nil, TairUI.Tracker.frame)
+
+    -- Mouse handling to redo without taint...
+    -- self.frame:EnableMouse(true)
+    -- self.frame:SetScript("OnMouseUp", function(_, button)
+    --     if InCombatLockdown() then
+    --         print("Addon cannot access secure function in combat.")
+    --         return
+    --     end
+    --     if button == "LeftButton" and self.questId and self.questId ~= 0 then
+    --         QuestMapFrame_OpenToQuestDetails(self.questId)
+    --     end
+    -- end)
+    -- Mouseover
+    -- self.frame:SetScript("OnEnter", function()
+    --     self.frame:SetAlpha(1)
+    -- end)
+    -- -- Mouseout
+    -- self.frame:SetScript("OnLeave", function()
+    --     self.frame:SetAlpha(config.frameAlpha)
+    -- end)
+
+    self.frame:SetSize(250, 0)
+    self.frame:SetAlpha(config.frameAlpha)
+
+    self.titleFontString = self.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    self.titleFontString:SetFont(config.fontFace, config.titleFontSize, config.fontFlag)
+    self.titleFontString:SetTextColor(config.titleColor.r, config.titleColor.g, config.titleColor.b, 1)
+    self.titleFontString:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
+    self.titleFontString:SetShadowColor(0, 0, 0, config.shadowAlpha)
+
+    return self
+end
+
+-- Set the objective frame's quest id
+function TairUI_ObjectiveFrame:SetQuest(questID)
+    self.questId = questID
+    self:Update()
+end
+
+-- Clear the objecive frame's objective strings
+function TairUI_ObjectiveFrame:ClearObjectives()
+    for _, fs in ipairs(self.objectiveFontStrings) do fs:Hide() end
+    self.objectiveFontStrings = {}
+end
+
+-- Auto calculate the height of the objective frame based on its contents
+function TairUI_ObjectiveFrame:GetContentHeight()
+    local height = 0
+    if self.titleFontString:IsShown() then
+        height = height + self.titleFontString:GetStringHeight()
+    end
+    for _, fs in ipairs(self.objectiveFontStrings) do
+        if fs:IsShown() and fs:GetText() ~= "" then
+            height = height + fs:GetStringHeight() + config.lineSpacing
+        end
+    end
+    return height
+end
+
+-- Create a fontstring for an objective string (e.g. 'Kill bats 1/1')
+function TairUI_ObjectiveFrame:CreateObjectiveFontString(anchor, text, color)
+    local fs = self.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    fs:SetFont(config.fontFace, config.objectiveFontSize, config.fontFlag)
+    fs:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -config.lineSpacing)
+    fs:SetTextColor(color.r, color.g, color.b, 1)
+    fs:SetShadowColor(0, 0, 0, config.shadowAlpha)
+    fs:SetText(text or "")
+    fs:Show()
+    table.insert(self.objectiveFontStrings, fs)
+    return fs
+end
+
+-- Update handler for the objective frame
+function TairUI_ObjectiveFrame:Update()
+    local newTitle = C_QuestLog.GetTitleForQuestID(self.questId) or "Unknown Quest"
+    if newTitle ~= self.cachedTitle then
+        self.titleFontString:SetText(newTitle)
+        self.cachedTitle = newTitle
+    end
+
+    local objectives = C_QuestLog.GetQuestObjectives(self.questId)
+    local changed = false
+
+    if C_QuestLog.IsComplete(self.questId) then
+        changed = (self.cachedObjectives[1] ~= "Ready for turn-in")
+        if changed then
+            self:ClearObjectives()
+            self:CreateObjectiveFontString(self.titleFontString, "Ready for turn-in", config.completeColor)
+            self.cachedObjectives = { "Ready for turn-in" }
+        end
+    elseif objectives then
+        if #objectives ~= #self.cachedObjectives then
+            changed = true
+        else
+            for i, obj in ipairs(objectives) do
+                local key = (obj.text or "") .. (obj.finished and "1" or "0")
+                if self.cachedObjectives[i] ~= key then
+                    changed = true
+                    break
+                end
+            end
+        end
+
+        if changed then
+            self:ClearObjectives()
+            local lastAnchor = self.titleFontString
+            self.cachedObjectives = {}
+            for _, obj in ipairs(objectives) do
+                local color = obj.finished and config.completeColor or config.incompleteColor
+                lastAnchor = self:CreateObjectiveFontString(lastAnchor, obj.text, color)
+                table.insert(self.cachedObjectives, (obj.text or "") .. (obj.finished and "1" or "0"))
+            end
+        end
+    end
+
+    self.frame:SetHeight(self:GetContentHeight())
+end
+
+----------------------------------------
+-- Tracker Frame Class
 ----------------------------------------
 
 local TairUI_Tracker = {}
 TairUI_Tracker.__index = TairUI_Tracker
 
+-- Create the parent tracker frame to hold the objective frames
 function TairUI_Tracker:new()
     local self = setmetatable({}, TairUI_Tracker)
-    self.frame = CreateFrame("Frame", "TairUI_TrackerFrame", UIParent)
+    self.frame = CreateFrame("Frame", nil, UIParent)
     self.frame:SetSize(200, 50)
     self.frame:SetPoint("TOPRIGHT", ObjectiveTrackerFrame, "TOPRIGHT", 0, 0)
     
@@ -26,6 +213,7 @@ function TairUI_Tracker:new()
     return self
 end
 
+-- Register the events associated with the tracker frame
 function TairUI_Tracker:RegisterEvents()
     self.frame:SetScript("OnEvent", function(_, event, ...)
         if event == "PLAYER_ENTERING_WORLD" then
@@ -57,14 +245,17 @@ function TairUI_Tracker:RegisterEvents()
     end
 end
 
+-- Event handling for the tracker frame
 function TairUI_Tracker:OnEvent(event, ...)
     self:UpdateTrackedQuests()
 end
 
+-- Mass hide any objective frames
 function TairUI_Tracker:ClearAndHideAllQuestFrames()
     for _, frame in ipairs(self.questFrames) do frame.frame:Hide() end
 end
 
+-- Mode system: open worlds, dungeons, etc.
 function TairUI_Tracker:InitializeModes()
     self.modes = {
         ["open_world"] = function() self:UpdateOpenWorld() end,
@@ -73,11 +264,13 @@ function TairUI_Tracker:InitializeModes()
     }
 end
 
+-- Returns the current mode based on in-game context
 function TairUI_Tracker:GetCurrentMode()
     if C_Scenario.IsInScenario() then return "delve" end
     return "open_world"
 end
 
+-- Update the quests we're currently tracking
 function TairUI_Tracker:UpdateTrackedQuests()
     self:StartLayout()
     local mode = self:GetCurrentMode()
@@ -85,6 +278,7 @@ function TairUI_Tracker:UpdateTrackedQuests()
     self:FinalizeLayout()
 end
 
+-- Begin building the frame layout
 function TairUI_Tracker:StartLayout()
     self:ClearAndHideAllQuestFrames()
     self.currentIndex = 1
@@ -92,10 +286,12 @@ function TairUI_Tracker:StartLayout()
     self.shownQuests = {} -- track shown quests for deduplication
 end
 
+-- Finalize the layout if needed
 function TairUI_Tracker:FinalizeLayout()
     -- Reserved for future layout adjustments
 end
 
+-- Append a header (title) frame
 function TairUI_Tracker:AppendHeader(title)
     local frame = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
     self.questFrames[self.currentIndex] = frame
@@ -118,11 +314,12 @@ function TairUI_Tracker:AppendHeader(title)
     self.currentIndex = self.currentIndex + 1
 end
 
+-- Try to fetch and add scenario/dungeon/delve objecives (aka criteria)
 function TairUI_Tracker:AppendScenarioObjectives()
     local frame = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
     self.questFrames[self.currentIndex] = frame
 
-    -- Get scenario and stage names
+    -- Fetch the scenario and stage names
     local scenarioName = nil
     local scenarioInfo = C_ScenarioInfo.GetScenarioInfo()
     scenarioName = scenarioInfo and scenarioInfo.name
@@ -134,7 +331,7 @@ function TairUI_Tracker:AppendScenarioObjectives()
     local titleParts = {}
     if scenarioName then table.insert(titleParts, scenarioName) end
     if stageName then
-        -- If the stage name is the same as the scenario (some dungeons), don't add it
+        -- If the stage name is the same as the scenario (some dungeons), skip it
         if stageName ~= scenarioName then
             table.insert(titleParts, stageName)
         end
@@ -150,7 +347,7 @@ function TairUI_Tracker:AppendScenarioObjectives()
     local anchor = frame.titleFontString
     local criteriaAdded = false
 
-    -- ✅ Use proper scenario step info API
+    -- Walk and fetch scenario objectives using the scenario API, currently C_ScenarioInfo
     local numCriteria = stepInfo and stepInfo.numCriteria or 0
 
     for i = 1, numCriteria do
@@ -200,11 +397,13 @@ function TairUI_Tracker:AppendScenarioObjectives()
     self.currentIndex = self.currentIndex + 1
 end
 
+-- Append the player's focused quest
 function TairUI_Tracker:AppendSuperTrackedQuest()
     local questID = C_SuperTrack.GetSuperTrackedQuestID()
     if questID then self:ShowQuest(questID) end
 end
 
+-- Not used, but this should fetch any quests on the current map
 function TairUI_Tracker:GetMapQuests()
     local mapID = C_Map.GetBestMapForUnit("player")
     if not mapID then return {} end
@@ -216,6 +415,7 @@ function TairUI_Tracker:GetMapQuests()
     return active
 end
 
+-- Not used, but if we want to track *all* of the quests on the map
 function TairUI_Tracker:AppendMapQuests()
     for _, questID in ipairs(self:GetMapQuests()) do
         if not self.shownQuests[questID] then
@@ -224,6 +424,7 @@ function TairUI_Tracker:AppendMapQuests()
     end
 end
 
+-- Try to parse out Blizzard's hidden quests
 local function IsVisibleQuest(questID)
     if not questID then return end
     local index = C_QuestLog.GetLogIndexForQuestID(questID)
@@ -235,6 +436,7 @@ local function IsVisibleQuest(questID)
     return not info.isHidden and not info.isHeader and info.questID
 end
 
+-- Open world update routine
 function TairUI_Tracker:UpdateOpenWorld()
     local shown = 0
     local superTracked = C_SuperTrack.GetSuperTrackedQuestID()
@@ -244,12 +446,14 @@ function TairUI_Tracker:UpdateOpenWorld()
         shown = shown + 1
     end
 
+    -- Try to detect quests with objectives in the immediate area
     if showProximity then
         local quests = {}
         for i = 1, C_QuestLog.GetNumQuestLogEntries() do
             local info = C_QuestLog.GetInfo(i)
             if info and not info.isHeader and info.isOnMap then
                 local distSqr, onContinent = C_QuestLog.GetDistanceSqToQuest(info.questID)
+                -- 100000 is arbitrary, this is all probably not ideal
                 if distSqr and onContinent and distSqr <= 100000 and info.questID ~= superTracked then
                     table.insert(quests, {
                         questID = info.questID,
@@ -259,8 +463,10 @@ function TairUI_Tracker:UpdateOpenWorld()
             end
         end
 
+        -- Sort the quests by proximity to the player
         table.sort(quests, function(a, b) return a.distSq < b.distSq end)
 
+        -- Iterate through and display the quests 
         for _, quest in ipairs(quests) do
             if shown >= config.maxQuests then break end
             self:ShowQuest(quest.questID)
@@ -269,16 +475,18 @@ function TairUI_Tracker:UpdateOpenWorld()
     end
 end
 
+-- Scenario (delve) update routine
 function TairUI_Tracker:UpdateDelve()
-    self:AppendScenarioObjectives()
     if showSuperTracked then self:AppendSuperTrackedQuest() end
-    -- if showDungeonQuests then self:AppendMapQuests() end
+    self:AppendScenarioObjectives()
 end
 
+-- Event update routine; seems like scenarios cover everything we need.
 function TairUI_Tracker:UpdateEvent()
     print("Event mode not implemented.")
 end
 
+-- Function to display a quest on the tracker. We use an existing objective frame or create a new one if needed.
 function TairUI_Tracker:ShowQuest(questID)
     if self.shownQuests[questID] then return end -- avoid duplicates
     self.shownQuests[questID] = true
@@ -287,6 +495,7 @@ function TairUI_Tracker:ShowQuest(questID)
     self.questFrames[self.currentIndex] = frame
     frame:SetQuest(questID)
 
+    -- Frame anchoring
     frame.frame:ClearAllPoints()
     if not self.lastAnchor then
         frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
@@ -301,6 +510,7 @@ function TairUI_Tracker:ShowQuest(questID)
     self.currentIndex = self.currentIndex + 1
 end
 
+-- Hide the blizzard tracker. Out of combat only!
 function TairUI_Tracker:HideBlizzardTracker()
     if InCombatLockdown() then
         self.hideDeferred = true
@@ -311,6 +521,7 @@ function TairUI_Tracker:HideBlizzardTracker()
     ObjectiveTrackerFrame:SetAlpha(0)
 end
 
+-- Toggle our tracker. Out of combat only to avoid taint.
 function TairUI_Tracker:Toggle()
     if InCombatLockdown() then
         self.toggleDeferred = true
@@ -336,6 +547,7 @@ end
 
 TairUI.Tracker = TairUI_Tracker:new()
 
+-- Slash command; type /tt to toggle trackers
 SLASH_TAIRTRACKER1 = "/tt"
 SlashCmdList["TAIRTRACKER"] = function()
     if TairUI.Tracker and TairUI.Tracker.Toggle then
