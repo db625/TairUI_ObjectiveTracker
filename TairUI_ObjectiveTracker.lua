@@ -25,6 +25,7 @@ local baseConfig = TairUI.Config or {
         ui = {
             gold = { r = 1, g = 0.82, b = 0 },
             light_gray = { r = 0.75, g = 0.75, b = 0.75 },
+            med_gray = { r = 0.66, g = 0.66, b = 0.66 },
             white = { r = 1, g = 1, b = 1 },
         }
     }
@@ -32,21 +33,30 @@ local baseConfig = TairUI.Config or {
 
 -- Derive working config for the tracker's layout and appearance
 local config = {
-    marginX = 0,
+    marginX = baseConfig.Layout.edgeMargin * -1,
     marginY = baseConfig.Layout.edgeMargin * -1,
-    questSpacing = baseConfig.General.HUDTextGapLarge,
+    vPadding = 0,
+    hPadding = 0,
+    questSpacing = 12,
     lineSpacing = baseConfig.General.HUDTextGap,
     maxQuests = 6,
-    shadowAlpha = baseConfig.General.HUDTextShadowAlpha,
-    frameAlpha = baseConfig.General.HUDTextAlpha,
+    shadowAlpha = 1,
+    frameAlpha = 1,
     titleFontSize = baseConfig.General.HUDTitleSize,
     objectiveFontSize = baseConfig.General.HUDTextSize,
     fontFace = "Fonts\\FRIZQT__.TTF",
-    fontFlag = baseConfig.General.HUDTextFlag,
+    fontFlag = "",
     titleColor = baseConfig.Colors.ui.gold,
-    completeColor = baseConfig.Colors.ui.white,
-    incompleteColor = baseConfig.Colors.ui.light_gray,
+    completeColor = baseConfig.Colors.ui.med_gray,
+    incompleteColor = baseConfig.Colors.ui.white,
 }
+
+local useGradient = TairUI.Config or false
+
+if useGradient then
+    config.vPadding = 12
+    config.hPadding = TairUI.Config.Layout.edgeMargin
+end
 
 -- Working feature flags
 local showSuperTracked = true
@@ -62,6 +72,7 @@ TairUI_ObjectiveFrame.__index = TairUI_ObjectiveFrame
 
 -- Create an objective frame that draws an objective title and series of objectives
 function TairUI_ObjectiveFrame:new(index)
+
     local self = setmetatable({}, TairUI_ObjectiveFrame)
     self.index = index
     self.questId = 0
@@ -71,34 +82,26 @@ function TairUI_ObjectiveFrame:new(index)
 
     self.frame = CreateFrame("Frame", nil, TairUI.Tracker.frame)
 
-    -- Future click handling
-    -- self.frame:EnableMouse(true)
-    -- self.frame:SetScript("OnMouseUp", function(_, button)
-    --     if InCombatLockdown() then
-    --         print("Addon cannot access secure function in combat.")
-    --         return
-    --     end
-    --     if button == "LeftButton" and self.questId and self.questId ~= 0 then
-    --         QuestMapFrame_OpenToQuestDetails(self.questId)
-    --     end
-    -- end)
-    -- Mouseover
-    -- self.frame:SetScript("OnEnter", function()
-    --     self.frame:SetAlpha(1)
-    -- end)
-    -- -- Mouseout
-    -- self.frame:SetScript("OnLeave", function()
-    --     self.frame:SetAlpha(config.frameAlpha)
-    -- end)
-
     self.frame:SetSize(250, 0)
     self.frame:SetAlpha(config.frameAlpha)
 
     self.titleFontString = self.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     self.titleFontString:SetFont(config.fontFace, config.titleFontSize, config.fontFlag)
     self.titleFontString:SetTextColor(config.titleColor.r, config.titleColor.g, config.titleColor.b, 1)
-    self.titleFontString:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
+    self.titleFontString:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, o)
+    self.titleFontString:SetJustifyV("MIDDLE")
     self.titleFontString:SetShadowColor(0, 0, 0, config.shadowAlpha)
+
+    -- Create a new heads up frame to display latest objectives
+    self.latestObjectiveFrame = CreateFrame("Frame", nil, UIParent)
+    self.latestObjectiveFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+
+    self.latestObjectiveText = self.latestObjectiveFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    self.latestObjectiveText:SetFont(config.fontFace, config.titleFontSize + 4, "OUTLINE")
+    self.latestObjectiveText:SetTextColor(config.incompleteColor.r, config.incompleteColor.g, config.incompleteColor.b, 1)
+    self.latestObjectiveText:SetShadowColor(0, 0, 0, config.shadowAlpha)
+    self.latestObjectiveText:SetPoint("CENTER", latestObjectiveFrame, "CENTER", 0, 100)
+    -- self.latestObjectiveText:SetText("Test")
 
     return self
 end
@@ -106,6 +109,7 @@ end
 -- Set the objective frame's quest id
 function TairUI_ObjectiveFrame:SetQuest(questID)
     self.questId = questID
+    self.cachedObjectives = {}
     self:Update()
 end
 
@@ -129,6 +133,22 @@ function TairUI_ObjectiveFrame:GetContentHeight()
     return height
 end
 
+-- Auto calculate the width of the objective frame based on its contents
+function TairUI_ObjectiveFrame:GetLongestStringWidth()
+    local width = 0
+    if self.titleFontString:IsShown() then
+        local stringWidth = self.titleFontString:GetStringWidth()
+        if stringWidth > width then width = stringWidth end
+    end
+    for _, fs in ipairs(self.objectiveFontStrings) do
+        if fs:IsShown() and fs:GetText() ~= "" then
+            local stringWidth = fs:GetStringWidth()
+            if stringWidth > width then width = stringWidth end
+        end
+    end
+    return width
+end
+
 -- Create a fontstring for an objective string (e.g. 'Kill bats 1/1')
 function TairUI_ObjectiveFrame:CreateObjectiveFontString(anchor, text, color)
     local fs = self.frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -144,48 +164,88 @@ end
 
 -- Update handler for the objective frame
 function TairUI_ObjectiveFrame:Update()
-    local newTitle = C_QuestLog.GetTitleForQuestID(self.questId) or "Unknown Quest"
+    local isWorldQuest = C_TaskQuest.IsActive(self.questId)
+    local newTitle
+    local objectives
+    local changed = false
+
+    if isWorldQuest then
+        newTitle = C_TaskQuest.GetQuestInfoByQuestID(self.questId) or "World Quest"
+        -- World quests still pull objectives from C_QuestLog
+        objectives = C_QuestLog.GetQuestObjectives(self.questId)
+    else
+        newTitle = C_QuestLog.GetTitleForQuestID(self.questId) or "Unknown Quest"
+        objectives = C_QuestLog.GetQuestObjectives(self.questId)
+    end
+
     if newTitle ~= self.cachedTitle then
         self.titleFontString:SetText(newTitle)
         self.cachedTitle = newTitle
     end
 
-    local objectives = C_QuestLog.GetQuestObjectives(self.questId)
-    local changed = false
+    -- add new world quest support
+    if isWorldQuest then
+        if objectives and #objectives > 0 then
+            if #objectives ~= #self.cachedObjectives then
+                changed = true
+            else
+                for i, obj in ipairs(objectives) do
+                    local key = (obj.text or "") .. (obj.finished and "1" or "0")
+                    if self.cachedObjectives[i] ~= key then
+                        changed = true
+                        break
+                    end
+                end
+            end
 
-    if C_QuestLog.IsComplete(self.questId) then
-        changed = (self.cachedObjectives[1] ~= "Ready for turn-in")
-        if changed then
-            self:ClearObjectives()
-            self:CreateObjectiveFontString(self.titleFontString, "Ready for turn-in", config.completeColor)
-            self.cachedObjectives = { "Ready for turn-in" }
-        end
-    elseif objectives then
-        if #objectives ~= #self.cachedObjectives then
-            changed = true
-        else
-            for i, obj in ipairs(objectives) do
-                local key = (obj.text or "") .. (obj.finished and "1" or "0")
-                if self.cachedObjectives[i] ~= key then
-                    changed = true
-                    break
+            if changed then
+                self:ClearObjectives()
+                local lastAnchor = self.titleFontString
+                self.cachedObjectives = {}
+                for _, obj in ipairs(objectives) do
+                    local color = obj.finished and config.completeColor or config.incompleteColor
+                    lastAnchor = self:CreateObjectiveFontString(lastAnchor, obj.text, color)
+                    table.insert(self.cachedObjectives, (obj.text or "") .. (obj.finished and "1" or "0"))
                 end
             end
         end
+    else
+        -- existing logic for regular quests
+        if C_QuestLog.IsComplete(self.questId) then
+            changed = (self.cachedObjectives[1] ~= "Ready for turn-in")
+            if changed then
+                self:ClearObjectives()
+                self:CreateObjectiveFontString(self.titleFontString, "Ready for turn-in", config.completeColor)
+                self.cachedObjectives = { "Ready for turn-in" }
+            end
+        elseif objectives then
+            if #objectives ~= #self.cachedObjectives then
+                changed = true
+            else
+                for i, obj in ipairs(objectives) do
+                    local key = (obj.text or "") .. (obj.finished and "1" or "0")
+                    if self.cachedObjectives[i] ~= key then
+                        changed = true
+                        break
+                    end
+                end
+            end
 
-        if changed then
-            self:ClearObjectives()
-            local lastAnchor = self.titleFontString
-            self.cachedObjectives = {}
-            for _, obj in ipairs(objectives) do
-                local color = obj.finished and config.completeColor or config.incompleteColor
-                lastAnchor = self:CreateObjectiveFontString(lastAnchor, obj.text, color)
-                table.insert(self.cachedObjectives, (obj.text or "") .. (obj.finished and "1" or "0"))
+            if changed then
+                self:ClearObjectives()
+                local lastAnchor = self.titleFontString
+                self.cachedObjectives = {}
+                for _, obj in ipairs(objectives) do
+                    local color = obj.finished and config.completeColor or config.incompleteColor
+                    lastAnchor = self:CreateObjectiveFontString(lastAnchor, obj.text, color)
+                    table.insert(self.cachedObjectives, (obj.text or "") .. (obj.finished and "1" or "0"))
+                end
             end
         end
     end
 
     self.frame:SetHeight(self:GetContentHeight())
+    self.frame:SetWidth(self:GetLongestStringWidth())
 end
 
 ----------------------------------------
@@ -199,13 +259,27 @@ TairUI_Tracker.__index = TairUI_Tracker
 function TairUI_Tracker:new()
     local self = setmetatable({}, TairUI_Tracker)
     self.frame = CreateFrame("Frame", nil, UIParent)
-    self.frame:SetSize(200, 50)
-    self.frame:SetPoint("TOPRIGHT", ObjectiveTrackerFrame, "TOPRIGHT", 0, 0)
+    self.frame:SetSize(200, 300)
+    self.frame:SetPoint("TOP", Minimap, "BOTTOM", 0, config.marginY)
+    self.frame:SetPoint("RIGHT", UIParent, "RIGHT", 0, 0)
+
+    if useGradient then
+        local color1 = TairUI.getColor("ui", "gradient1")
+        local color2 = TairUI.getColor("ui", "gradient2")
+        self.background = self.frame:CreateTexture()
+        self.background:SetAllPoints()
+        self.background:SetColorTexture(color1.r, color1.g, color1.b, color1.a)
+        self.background:SetGradient("HORIZONTAL", color2, color1)
+    end
     
     self.useTairTracker = true
     self.toggleDeferred = false
     self.hideDeferred = false
     self.questFrames = {}
+
+    self.lastLayoutHeight = 0
+    self.lastLayoutWidth = 0
+    self.lastLayoutQuestCount = 0
 
     self:InitializeModes()
     self:RegisterEvents()
@@ -286,9 +360,45 @@ function TairUI_Tracker:StartLayout()
     self.shownQuests = {} -- track shown quests for deduplication
 end
 
--- Finalize the layout if needed
+-- Finalize the tracker layout on update
 function TairUI_Tracker:FinalizeLayout()
-    -- Reserved for future layout adjustments
+    local totalHeight = 0
+    local maxWidth = 0
+    local shownCount = 0
+
+    for _, frame in ipairs(self.questFrames) do
+        if frame.frame:IsShown() then
+            shownCount = shownCount + 1
+            totalHeight = totalHeight + frame.frame:GetHeight()
+            maxWidth = math.max(maxWidth, frame.frame:GetWidth())
+            if shownCount > 1 then
+                totalHeight = totalHeight + config.questSpacing
+            end
+        end
+    end
+
+    totalHeight = totalHeight + (config.vPadding * 2)
+
+    -- Skip if layout hasn’t changed
+    if self.lastLayoutHeight == totalHeight and
+       self.lastLayoutWidth == maxWidth and
+       self.lastLayoutQuestCount == shownCount then
+        return
+    end
+
+    self.lastLayoutHeight = totalHeight
+    self.lastLayoutWidth = maxWidth
+    self.lastLayoutQuestCount = shownCount
+
+    -- Update layout   
+    if shownCount == 0 then
+        self.frame:Hide()
+    else
+        self.frame:SetWidth(maxWidth + (config.hPadding * 2 ))
+        self.frame:SetHeight(totalHeight)
+        self.frame:Show()
+    end
+    
 end
 
 -- Append a header (title) frame
@@ -303,9 +413,13 @@ function TairUI_Tracker:AppendHeader(title)
 
     frame.frame:ClearAllPoints()
     if not self.lastAnchor then
-        frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
+        local y = -config.vPadding
+        local x = -config.hPadding
+        frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", x, y)
     else
-        frame.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame, "BOTTOMRIGHT", 0, -config.questSpacing)
+        local y = -config.lineSpacing
+        local x = 0
+        frame.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame, "BOTTOMRIGHT", x, y)
     end
 
     frame.frame:SetHeight(frame:GetContentHeight())
@@ -316,6 +430,7 @@ end
 
 -- Try to fetch and add scenario/dungeon/delve objecives (aka criteria)
 function TairUI_Tracker:AppendScenarioObjectives()
+
     local frame = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
     self.questFrames[self.currentIndex] = frame
 
@@ -375,23 +490,32 @@ function TairUI_Tracker:AppendScenarioObjectives()
         criteriaAdded = true
     end
 
-    -- Final fallback
-    if not criteriaAdded then
-        local fallbackText = "Scenario objective not defined"
-        anchor = frame:CreateObjectiveFontString(anchor, fallbackText, config.incompleteColor)
-        table.insert(frame.cachedObjectives, fallbackText .. "0")
-    end
-
     -- Layout
     frame.frame:ClearAllPoints()
     if not self.lastAnchor then
-        frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
+        local y = -config.vPadding
+        local x = -config.hPadding
+        frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", x, y)
     else
-        frame.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame, "BOTTOMRIGHT", 0, -config.questSpacing)
+        local y = -config.lineSpacing
+        local x = 0
+        frame.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame, "BOTTOMRIGHT", x, y)
     end
 
     frame.frame:SetHeight(frame:GetContentHeight())
     frame.frame:Show()
+
+    -- Fall back to not displaying the quest if no objectives are defineds
+    if not criteriaAdded then
+        -- local fallbackText = "Scenario objective not defined"
+        -- anchor = frame:CreateObjectiveFontString(anchor, fallbackTe
+        frame.frame:Hide()
+        return
+    end
+
+    -- local debugTexture = frame.frame:CreateTexture()
+    -- debugTexture:SetAllPoints(frame.frame)
+    -- debugTexture:SetColorTexture(0, 1, 0.5, 0.33) -- alpha to see any overlapping of frames
 
     self.lastAnchor = frame
     self.currentIndex = self.currentIndex + 1
@@ -430,6 +554,11 @@ local function IsVisibleQuest(questID)
     local index = C_QuestLog.GetLogIndexForQuestID(questID)
     if not index then return false end
 
+    local title = C_QuestLog.GetTitleForQuestID(questID)
+    if title == "Thanks for the Wax" then
+        return false
+    end
+
     local info = C_QuestLog.GetInfo(index)
     if not info then return false end
 
@@ -440,10 +569,16 @@ end
 function TairUI_Tracker:UpdateOpenWorld()
     local shown = 0
     local superTracked = C_SuperTrack.GetSuperTrackedQuestID()
-    -- Only use it if it's visible in the log (and not a hidden server quest like 72560)
-    if showSuperTracked and IsVisibleQuest(superTracked) then
-        self:ShowQuest(superTracked)
-        shown = shown + 1
+
+    -- If we are supertracking and the supertracked quest is a world quest or is a valid/visible quest, show it
+    if superTracked then
+        local isSuperTrackedWorldQuest = C_TaskQuest.IsActive(superTracked)
+        if showSuperTracked then
+            if isSuperTrackedWorldQuest or IsVisibleQuest(superTracked) then
+                self:ShowQuest(superTracked)
+                shown = shown + 1
+            end
+        end
     end
 
     -- Try to detect quests with objectives in the immediate area
@@ -488,26 +623,41 @@ end
 
 -- Function to display a quest on the tracker. We use an existing objective frame or create a new one if needed.
 function TairUI_Tracker:ShowQuest(questID)
-    -- Filter duplicates
     if self.shownQuests[questID] then return end
-    self.shownQuests[questID] = true
 
-    local frame = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
-    self.questFrames[self.currentIndex] = frame
-    frame:SetQuest(questID)
-
-    -- Frame anchoring
-    frame.frame:ClearAllPoints()
-    if not self.lastAnchor then
-        frame.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", 0, 0)
-    else
-        frame.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame, "BOTTOMRIGHT", 0, -config.questSpacing)
+    local title = C_QuestLog.GetTitleForQuestID(questID)
+    if title == "Thanks for the Wax" then
+        return
     end
 
-    frame.frame:SetHeight(frame:GetContentHeight())
-    frame.frame:Show()
+    -- Allow supertracked quest even if invisible
+    local isSupertracked = questID == C_SuperTrack.GetSuperTrackedQuestID()
+    local isWorldQuest = C_TaskQuest.IsActive(questID)
+    local visibleQuest = IsVisibleQuest(questID)
 
-    self.lastAnchor = frame
+    if not isWorldQuest and not visibleQuest and not isSupertracked then
+        return
+    end
+
+    self.shownQuests[questID] = true
+
+    local quest = self.questFrames[self.currentIndex] or TairUI_ObjectiveFrame:new(self.currentIndex)
+    self.questFrames[self.currentIndex] = quest
+    quest:SetQuest(questID)
+
+    quest.frame:ClearAllPoints()
+    if not self.lastAnchor then
+        local x = -config.hPadding
+        local y = -config.vPadding
+        quest.frame:SetPoint("TOPRIGHT", self.frame, "TOPRIGHT", x, y)
+    else
+        local x = 0
+        local y = -config.questSpacing
+        quest.frame:SetPoint("TOPRIGHT", self.lastAnchor.frame or self.lastAnchor, "BOTTOMRIGHT", x, y)
+    end
+
+    quest.frame:Show()
+    self.lastAnchor = quest.frame
     self.currentIndex = self.currentIndex + 1
 end
 
